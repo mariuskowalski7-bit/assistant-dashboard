@@ -1,3 +1,31 @@
+// ── YouTube mode ──────────────────────────────────────────────
+// public  = RSS feed + optional Data API key (no OAuth required)
+// studio  = authenticated via Google OAuth (CTR, impressions, etc.)
+export type YouTubeMode = 'public' | 'studio'
+
+// ── Public mode: video card from RSS (+ optional API enrichment) ──
+export interface PublicVideo {
+  id: string
+  title: string
+  publishedAt: string
+  thumbnail: string        // best available thumbnail URL
+  videoUrl: string         // https://youtube.com/watch?v=ID
+  channelTitle: string
+  // Present only when YOUTUBE_API_KEY is set:
+  viewCount?: string
+  likeCount?: string
+  commentCount?: string
+  duration?: string        // ISO 8601 e.g. 'PT8M24S'
+}
+
+export interface PublicYouTubeData {
+  mode: 'public'
+  channelId: string
+  videos: PublicVideo[]    // up to 5 latest
+  oauthAvailable: boolean  // true when GOOGLE_CLIENT_ID is set → show "Connect" button
+  cachedAt: string
+}
+
 // ── YouTube API response shapes ───────────────────────────────
 
 export interface YouTubeTokens {
@@ -80,15 +108,20 @@ export interface LatestVideoData {
 }
 
 export interface ClaudeInsights {
-  summary: string         // 2-3 sentence performance summary
-  strengths: string[]     // What's working
-  improvements: string[]  // What to improve
-  suggestion: string      // One concrete next action
+  summary: string
+  strengths: string[]
+  improvements: string[]
+  suggestion: string
 }
 
-export interface DashboardYouTubeData {
+// Studio mode response (OAuth connected)
+export interface StudioYouTubeData {
+  mode: 'studio'
   video: Video
   totals: AnalyticsTotals
-  insights: ClaudeInsights
+  insights: ClaudeInsights | null
   cachedAt: string
 }
+
+// Union – what /api/youtube/data always returns
+export type DashboardYouTubeData = PublicYouTubeData | StudioYouTubeData

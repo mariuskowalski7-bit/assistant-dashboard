@@ -1,9 +1,14 @@
-import { createServerClient } from '@supabase/ssr'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
-// Used in Server Components, API Route handlers, and server-side lib files.
-// next/headers is only available in the server runtime – never import this
-// file from a Client Component or a file that a Client Component imports.
+type CookieToSet = {
+  name: string
+  value: string
+  options?: CookieOptions
+}
+
+// Used in Server Components, API Route handlers and server-side library files.
+// next/headers is only available in the server runtime.
 export async function createClient() {
   const cookieStore = await cookies()
 
@@ -15,13 +20,13 @@ export async function createClient() {
         getAll() {
           return cookieStore.getAll()
         },
-        setAll(cookiesToSet: { name: string; value: string; options?: Parameters<typeof cookieStore.set>[2] }[]) {
+        setAll(cookiesToSet: CookieToSet[]) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) =>
+            cookiesToSet.forEach(({ name, value, options }) => {
               cookieStore.set(name, value, options)
-            )
+            })
           } catch {
-            // Server Component render – cookies cannot be mutated, safe to ignore.
+            // Ignore when cookies cannot be set from this context.
           }
         },
       },

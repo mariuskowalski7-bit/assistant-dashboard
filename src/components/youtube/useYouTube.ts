@@ -8,36 +8,34 @@ type Period = '7d' | '28d' | '90d'
 interface UseYouTubeReturn {
   data: DashboardYouTubeData | null
   isLoading: boolean
-  isConnected: boolean
   error: string | null
+  notConfigured: boolean   // true when NEXT_PUBLIC_YOUTUBE_CHANNEL_ID is missing
   period: Period
   setPeriod: (p: Period) => void
   refresh: () => Promise<void>
-  connectUrl: string
 }
 
 export function useYouTube(): UseYouTubeReturn {
-  const [data, setData] = useState<DashboardYouTubeData | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isConnected, setIsConnected] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [period, setPeriod] = useState<Period>('28d')
+  const [data, setData]               = useState<DashboardYouTubeData | null>(null)
+  const [isLoading, setIsLoading]     = useState(true)
+  const [error, setError]             = useState<string | null>(null)
+  const [notConfigured, setNotConfigured] = useState(false)
+  const [period, setPeriod]           = useState<Period>('28d')
 
-  const fetch_ = useCallback(async (p: Period) => {
+  const load = useCallback(async (p: Period) => {
     setIsLoading(true)
     setError(null)
+    setNotConfigured(false)
     try {
-      const res = await fetch(`/api/youtube/data?period=${p}&insights=true`)
+      const res  = await fetch(`/api/youtube/data?period=${p}&insights=true`)
       const json = await res.json()
 
-      if (res.status === 403 && json.error === 'youtube_not_connected') {
-        setIsConnected(false)
+      if (res.status === 422 && json.error === 'youtube_not_configured') {
+        setNotConfigured(true)
         return
       }
       if (!res.ok) throw new Error(json.error ?? 'Unknown error')
-
       setData(json as DashboardYouTubeData)
-      setIsConnected(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -45,18 +43,8 @@ export function useYouTube(): UseYouTubeReturn {
     }
   }, [])
 
-  const refresh = useCallback(() => fetch_(period), [fetch_, period])
+  const refresh = useCallback(() => load(period), [load, period])
+  useEffect(() => { load(period) }, [load, period])
 
-  useEffect(() => { fetch_(period) }, [fetch_, period])
-
-  return {
-    data,
-    isLoading,
-    isConnected,
-    error,
-    period,
-    setPeriod,
-    refresh,
-    connectUrl: '/api/youtube/auth',
-  }
+  return { data, isLoading, error, notConfigured, period, setPeriod, refresh }
 }
