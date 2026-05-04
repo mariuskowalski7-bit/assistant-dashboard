@@ -32,6 +32,10 @@ function decodeXml(value: string): string {
     .replace(/&gt;/g, '>')
 }
 
+function getAuthorName(entry: string): string | null {
+  const match = entry.match(/<author>[\s\S]*?<name>([\s\S]*?)<\/name>[\s\S]*?<\/author>/i)
+  return match ? decodeXml(match[1].trim()) : null
+}
 function parseYouTubeRss(xml: string): PublicVideo[] {
   const entries = xml.match(/<entry>[\s\S]*?<\/entry>/g) ?? []
 
@@ -39,7 +43,7 @@ function parseYouTubeRss(xml: string): PublicVideo[] {
     const idRaw = getTagValue(entry, 'yt:videoId') ?? ''
     const title = getTagValue(entry, 'title') ?? 'Untitled'
     const publishedAt = getTagValue(entry, 'published')
-    const channelTitle = getTagValue(entry, 'author') ?? null
+    const channelTitle = getAuthorName(entry)
 
     const mediaThumbnailMatch = entry.match(/<media:thumbnail[^>]*url="([^"]+)"/i)
     const thumbnail = mediaThumbnailMatch ? mediaThumbnailMatch[1] : null
