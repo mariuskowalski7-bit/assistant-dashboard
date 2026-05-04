@@ -1,90 +1,173 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { fetchPublicYouTubeData } from '@/lib/youtube/public'
-import { getYouTubeClient } from '@/lib/youtube/client'
-import { generateInsights } from '@/lib/youtube/insights'
-import type { StudioYouTubeData } from '@/lib/youtube/types'
+import { NextResponse } from 'next/server'
 
-export async function GET(req: NextRequest) {
+export const dynamic = 'force-dynamic'
+
+type PublicVideo = {
+  id: string
+  title: string
+  url: string
+  publishedAt: string | null
+  thumbnail: string | null
+  channelTitle: string | null
+  statistics?: {
+    viewCount?: string
+    likeCount?: string
+    commentCount?: string
+  }
+}
+
+function getTagValue(xml: string, tag: string): string | null {
+  const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+  return match ? decodeXml(match[1].trim()) : null
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[/g, '')
+    .replace(/\]\]>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
+function parseYouTubeRss(xml: string): PublicVideo[] {
+  const entries = xml.match(/<entry>[\s\S]*?<\/entry>/g) ?? []
+
+  return entries.map((entry) => {
+    const idRaw = getTagValue(entry, 'yt:videoId') ?? ''
+    const title = getTagValue(entry, 'title') ?? 'Untitled'
+    const publishedAt = getTagValue(entry, 'published')
+    const channelTitle = getTagValue(entry, 'author') ?? null
+
+    const mediaThumbnailMatch = entry.match(/<media:thumbnail[^>]*url="([^"]+)"/i)
+    const thumbnail = mediaThumbnailMatch ? mediaThumbnailMatch[1] : null
+
+    return {
+      id: idRaw,
+      title,
+      url: idRaw ? `https://www.youtube.com/watch?v=${idRaw}` : '',
+      publishedAt,
+      thumbnail,
+      channelTitle,
+    }
+  })
+}
+
+async function addPublicStats(videos: PublicVideo[]): Promise<PublicVideo[]> {
+  const apiKey = process.env.YOUTUBE_API_KEY
+
+  if (!apiKey || videos.length === 0) {
+    return videos
+  }
+
+  const ids = videos.map((video) => video.id).filter(Boolean).join(',')
+
+  if (!ids) {
+    return videos
+  }
+
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const url = new URL('https://www.googleapis.com/youtube/v3/videos')
+    url.searchParams.set('part', 'statistics')
+    url.searchParams.set('id', ids)
+    url.searchParams.set('key', apiKey)
 
-    const { searchParams } = new URL(req.url)
-    const period       = (searchParams.get('period') ?? '28d') as '7d' | '28d' | '90d'
-    const withInsights = searchParams.get('insights') !== 'false'
+    const res = await fetch(url.toString(), {
+      next: { revalidate: 3600 },
+    })
 
-    const oauthConfigured = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
+    if (!res.ok) {
+      return videos
+    }
 
-    // Fetch token row once – may be null if user never connected OAuth
-    const tokenRow = oauthConfigured
-      ? (await supabase.from('youtube_tokens').select('channel_id').eq('user_id', user.id).maybeSingle()).data
-      : null
+    const json = await res.json()
 
-    const userHasOAuth = !!tokenRow
+    const statsById = new Map<string, PublicVideo['statistics']>()
 
-    // ── PUBLIC MODE ──────────────────────────────────────────
-    // Active when: OAuth not configured, or user hasn't connected yet
-    if (!oauthConfigured || !userHasOAuth) {
-      // Prefer env channel ID; fall back to stored channel_id if somehow present
-      const channelId = process.env.NEXT_PUBLIC_YOUTUBE_CHANNEL_ID ?? tokenRow?.channel_id
+    for (const item of json.items ?? []) {
+      if (item.id && item.statistics) {
+        statsById.set(item.id, item.statistics)
+      }
+    }
 
-      if (!channelId) {
-        return NextResponse.json({
-          mode:      'public',
+    return videos.map((video) => ({
+      ...video,
+      statistics: statsById.get(video.id),
+    }))
+  } catch {
+    return videos
+  }
+}
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const period = searchParams.get('period') ?? '28'
+
+  const channelId = process.env.NEXT_PUBLIC_YOUTUBE_CHANNEL_ID
+
+  if (!channelId) {
+    return NextResponse.json(
+      {
+        mode: 'public',
+        connected: false,
+        period,
+        message: 'YouTube ist noch nicht verbunden. Bitte NEXT_PUBLIC_YOUTUBE_CHANNEL_ID in Vercel eintragen.',
+        videos: [],
+        latestVideo: null,
+      },
+      { status: 200 }
+    )
+  }
+
+  try {
+    const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`
+
+    const rssResponse = await fetch(rssUrl, {
+      next: { revalidate: 3600 },
+    })
+
+    if (!rssResponse.ok) {
+      return NextResponse.json(
+        {
+          mode: 'public',
           connected: false,
-          message:   'YouTube ist noch nicht verbunden. Bitte Channel-ID eintragen.',
-        })
-      }
-
-      const publicData = await fetchPublicYouTubeData()
-      return NextResponse.json(publicData)
+          period,
+          message: 'YouTube RSS Feed konnte nicht geladen werden.',
+          videos: [],
+          latestVideo: null,
+        },
+        { status: 200 }
+      )
     }
 
-    // ── STUDIO MODE ──────────────────────────────────────────
-    // tokenRow is non-null here: userHasOAuth guarantees it
-    const ytClient = await getYouTubeClient(user.id, supabase)
+    const xml = await rssResponse.text()
+    const videosFromRss = parseYouTubeRss(xml)
+    const videos = await addPublicStats(videosFromRss)
 
-    // Resolve channel ID: stored value first, then discover via API
-    const channelId = tokenRow.channel_id ?? await ytClient.getChannelId()
-
-    const video     = await ytClient.getLatestVideo(channelId)
-    const analytics = await ytClient.getVideoAnalytics(video.id, period)
-
-    let insights = null
-    if (withInsights) {
-      const cacheKey = `insights:${video.id}:${period}`
-      const { data: cached } = await supabase
-        .from('youtube_cache')
-        .select('data, cached_at')
-        .eq('user_id', user.id)
-        .eq('cache_key', cacheKey)
-        .maybeSingle()
-
-      if (cached && Date.now() - new Date(cached.cached_at).getTime() < 3_600_000) {
-        insights = cached.data
-      } else {
-        insights = await generateInsights(video, analytics.totals, period)
-        await supabase.from('youtube_cache').upsert(
-          { user_id: user.id, cache_key: cacheKey, data: insights, cached_at: new Date().toISOString() },
-          { onConflict: 'user_id,cache_key' }
-        )
-      }
-    }
-
-    const response: StudioYouTubeData = {
-      mode:     'studio',
-      video,
-      totals:   analytics.totals,
-      insights,
-      cachedAt: new Date().toISOString(),
-    }
-    return NextResponse.json(response)
-
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[GET /api/youtube/data]', msg)
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return NextResponse.json(
+      {
+        mode: 'public',
+        connected: false,
+        period,
+        message: 'Public Mode aktiv.',
+        videos,
+        latestVideo: videos[0] ?? null,
+      },
+      { status: 200 }
+    )
+  } catch {
+    return NextResponse.json(
+      {
+        mode: 'public',
+        connected: false,
+        period,
+        message: 'Öffentliche YouTube-Daten konnten nicht geladen werden.',
+        videos: [],
+        latestVideo: null,
+      },
+      { status: 200 }
+    )
   }
 }
