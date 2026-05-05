@@ -20,7 +20,7 @@ function getInputFromBody(body: unknown): string {
 }
 
 function classifyInput(input: string): EntryType {
-  const text = input.toLowerCase()
+  const text = input.toLowerCase().trim()
 
   const hasTime =
     /\b\d{1,2}\s?uhr\b/.test(text) ||
@@ -36,13 +36,45 @@ function classifyInput(input: string): EntryType {
     text.includes('donnerstag') ||
     text.includes('freitag') ||
     text.includes('samstag') ||
-    text.includes('sonntag')
+    text.includes('sonntag') ||
+    text.includes('nächste woche') ||
+    text.includes('bis ')
 
-  if (
-    text.includes('erinnere') ||
-    text.includes('nicht vergessen') ||
-    text.includes('denk daran')
-  ) {
+  const noteTriggers = [
+    'merke dir',
+    'notiz',
+    'speichere dir',
+    'präferenz',
+    'ich will',
+    'ich möchte',
+  ]
+
+  if (noteTriggers.some((trigger) => text.includes(trigger))) {
+    return 'note'
+  }
+
+  const reminderTriggers = [
+    'erinnere',
+    'erinnerung',
+    'nicht vergessen',
+    'denk daran',
+    'erinner mich',
+  ]
+
+  if (reminderTriggers.some((trigger) => text.includes(trigger))) {
+    return 'reminder'
+  }
+
+  const reminderKeywords = [
+    'mülltonne',
+    'müll',
+    'wäsche',
+    'wecker',
+    'medikament',
+    'rausstellen',
+  ]
+
+  if (reminderKeywords.some((keyword) => text.includes(keyword))) {
     return 'reminder'
   }
 
@@ -50,12 +82,31 @@ function classifyInput(input: string): EntryType {
     return 'event'
   }
 
+  const taskKeywords = [
+    'rechnung',
+    'schreiben',
+    'machen',
+    'erledigen',
+    'bezahlen',
+    'überweisen',
+    'anrufen',
+    'kaufen',
+    'abschicken',
+    'abgeben',
+    'lernen',
+    'bewerben',
+    'aufräumen',
+    'putzen',
+    'organisieren',
+    'vorbereiten',
+  ]
+
   if (
     text.includes('bis ') ||
     text.includes('muss') ||
     text.includes('todo') ||
     text.includes('aufgabe') ||
-    text.includes('erledigen')
+    taskKeywords.some((keyword) => text.includes(keyword))
   ) {
     return 'task'
   }
@@ -81,25 +132,28 @@ function createReply(input: string, type: EntryType, saved: boolean): string {
   return `Alles klar, ich habe mir das als Notiz gemerkt${savedText}: „${input}“.`
 }
 
+function normalizeSupabaseUrl(rawUrl?: string) {
+  if (!rawUrl) return null
+
+  return rawUrl
+    .trim()
+    .replace(/\/rest\/v1\/?$/, '')
+    .replace(/\/$/, '')
+}
+
 function getSupabaseConfig() {
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
-  const rawKey =
+  const url = normalizeSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL)
+
+  const key =
     process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
     process.env.SUPABASE_SECRET_KEY?.trim() ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim()
 
-  if (!rawUrl || !rawKey) {
+  if (!url || !key) {
     return null
   }
 
-  const url = rawUrl
-    .replace(/\/rest\/v1\/?$/, '')
-    .replace(/\/$/, '')
-
-  return {
-    url,
-    key: rawKey,
-  }
+  return { url, key }
 }
 
 async function saveEntry(input: string, type: EntryType) {
@@ -116,13 +170,13 @@ async function saveEntry(input: string, type: EntryType) {
     const response = await fetch(`${config.url}/rest/v1/entries`, {
       method: 'POST',
       headers: {
-  apikey: config.key,
-  ...(config.key.startsWith('eyJ')
-    ? { Authorization: `Bearer ${config.key}` }
-    : {}),
-  'Content-Type': 'application/json',
-  Prefer: 'return=representation',
-},
+        apikey: config.key,
+        ...(config.key.startsWith('eyJ')
+          ? { Authorization: `Bearer ${config.key}` }
+          : {}),
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
       body: JSON.stringify({
         type,
         title: input,
