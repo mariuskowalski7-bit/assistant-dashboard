@@ -1,18 +1,19 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
 type EntryType = 'event' | 'task' | 'reminder' | 'note'
 
-function getInputFromBody(body: any): string {
-  if (typeof body?.message === 'string') return body.message
-  if (typeof body?.input === 'string') return body.input
-  if (typeof body?.text === 'string') return body.text
+function getInputFromBody(body: unknown): string {
+  const obj = body as Record<string, unknown>
 
-  if (Array.isArray(body?.messages) && body.messages.length > 0) {
-    const last = body.messages[body.messages.length - 1]
-    if (typeof last?.content === 'string') return last.content
+  if (typeof obj.message === 'string') return obj.message
+  if (typeof obj.input === 'string') return obj.input
+  if (typeof obj.text === 'string') return obj.text
+
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+    const last = obj.messages[obj.messages.length - 1] as Record<string, unknown>
+    if (typeof last.content === 'string') return last.content
   }
 
   return ''
@@ -80,20 +81,77 @@ function createReply(input: string, type: EntryType, saved: boolean): string {
   return `Alles klar, ich habe mir das als Notiz gemerkt${savedText}: „${input}“.`
 }
 
-function getSupabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+function getSupabaseConfig() {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  const rawKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    process.env.SUPABASE_SECRET_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim()
 
-  if (!url || !serviceKey) {
+  if (!rawUrl || !rawKey) {
     return null
   }
 
-  return createClient(url, serviceKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  })
+  const url = rawUrl
+    .replace(/\/rest\/v1\/?$/, '')
+    .replace(/\/$/, '')
+
+  return {
+    url,
+    key: rawKey,
+  }
+}
+
+async function saveEntry(input: string, type: EntryType) {
+  const config = getSupabaseConfig()
+
+  if (!config) {
+    return {
+      saved: false,
+      error: 'Supabase URL oder Key fehlt.',
+    }
+  }
+
+  try {
+    const response = await fetch(`${config.url}/rest/v1/entries`, {
+      method: 'POST',
+      headers: {
+        apikey: config.key,
+        Authorization: `Bearer ${config.key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify({
+        type,
+        title: input,
+        status: 'pending',
+        source: 'fallback-chat',
+        metadata: {
+          originalInput: input,
+          createdBy: 'zero-cost-fallback',
+        },
+      }),
+    })
+
+    const responseText = await response.text()
+
+    if (!response.ok) {
+      return {
+        saved: false,
+        error: responseText || `Supabase insert failed with status ${response.status}`,
+      }
+    }
+
+    return {
+      saved: true,
+      error: null,
+    }
+  } catch (error) {
+    return {
+      saved: false,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 export async function POST(request: Request) {
@@ -114,34 +172,8 @@ export async function POST(request: Request) {
     }
 
     const type = classifyInput(input)
-    const supabase = getSupabaseAdmin()
-
-    let saved = false
-    let saveError: string | null = null
-
-    if (supabase) {
-      const { error } = await supabase.from('entries').insert({
-        type,
-        title: input,
-        status: 'pending',
-        source: 'fallback-chat',
-        metadata: {
-          originalInput: input,
-          createdBy: 'zero-cost-fallback',
-        },
-      })
-
-      if (error) {
-        saveError = error.message
-        console.error('Entry save error:', error)
-      } else {
-        saved = true
-      }
-    } else {
-      saveError = 'SUPABASE_SERVICE_ROLE_KEY fehlt.'
-    }
-
-    const reply = createReply(input, type, saved)
+    const result = await saveEntry(input, type)
+    const reply = createReply(input, type, result.saved)
 
     return NextResponse.json(
       {
@@ -149,8 +181,8 @@ export async function POST(request: Request) {
         message: reply,
         content: reply,
         type,
-        saved,
-        saveError,
+        saved: result.saved,
+        saveError: result.error,
         entry: {
           title: input,
           type,
@@ -161,13 +193,11 @@ export async function POST(request: Request) {
       { status: 200 }
     )
   } catch (error) {
-    console.error('Chat route error:', error)
-
     return NextResponse.json(
       {
         reply: 'Es gab einen Fehler im Chat-Fallback.',
         message: 'Es gab einen Fehler im Chat-Fallback.',
-        error: 'chat_fallback_error',
+        error: error instanceof Error ? error.message : String(error),
         saved: false,
       },
       { status: 200 }
