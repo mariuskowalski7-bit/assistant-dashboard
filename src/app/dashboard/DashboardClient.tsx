@@ -8,10 +8,7 @@ type Entry = {
   type?: 'event' | 'task' | 'reminder' | 'note' | string | null
   status?: string | null
   created_at?: string | null
-  date?: string | null
-  time?: string | null
-  due_at?: string | null
-  start_at?: string | null
+  updated_at?: string | null
   source?: string | null
   metadata?: {
     originalInput?: string
@@ -22,17 +19,6 @@ type Entry = {
 type DashboardResponse = {
   ok?: boolean
   entries?: Entry[]
-  events?: Entry[]
-  tasks?: Entry[]
-  reminders?: Entry[]
-  notes?: Entry[]
-  counts?: {
-    total?: number
-    events?: number
-    tasks?: number
-    reminders?: number
-    notes?: number
-  }
   error?: string | null
 }
 
@@ -52,11 +38,54 @@ function getTypeColor(type?: string | null) {
   return '#999'
 }
 
-function EntryCard({ entry }: { entry: Entry }) {
+function ActionButton({
+  children,
+  onClick,
+  danger = false,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  danger?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '7px 10px',
+        borderRadius: 10,
+        border: danger
+          ? '1px solid rgba(255, 80, 80, 0.35)'
+          : '1px solid rgba(255,255,255,0.12)',
+        background: danger
+          ? 'rgba(255, 80, 80, 0.08)'
+          : 'rgba(255,255,255,0.05)',
+        color: danger ? '#ff7b7b' : 'var(--text)',
+        cursor: 'pointer',
+        fontSize: 13,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function EntryCard({
+  entry,
+  onDone,
+  onUndo,
+  onDelete,
+}: {
+  entry: Entry
+  onDone: (id: string) => void
+  onUndo: (id: string) => void
+  onDelete: (id: string) => void
+}) {
   const title =
     entry.title ||
     entry.metadata?.originalInput ||
     'Unbenannter Eintrag'
+
+  const isDone = entry.status === 'done'
 
   return (
     <div
@@ -64,49 +93,75 @@ function EntryCard({ entry }: { entry: Entry }) {
         padding: 16,
         borderRadius: 16,
         border: '1px solid rgba(255,255,255,0.08)',
-        background: 'rgba(255,255,255,0.035)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: 16,
+        background: isDone
+          ? 'rgba(61, 220, 151, 0.06)'
+          : 'rgba(255,255,255,0.035)',
+        display: 'grid',
+        gap: 14,
+        opacity: isDone ? 0.72 : 1,
       }}
     >
-      <div>
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            marginBottom: 8,
-            fontSize: 13,
-            color: getTypeColor(entry.type),
-            fontWeight: 600,
-          }}
-        >
-          <span
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+        <div>
+          <div
             style={{
-              width: 8,
-              height: 8,
-              borderRadius: 99,
-              background: getTypeColor(entry.type),
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 8,
+              fontSize: 13,
+              color: getTypeColor(entry.type),
+              fontWeight: 600,
             }}
-          />
-          {getTypeLabel(entry.type)}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 99,
+                background: getTypeColor(entry.type),
+              }}
+            />
+            {getTypeLabel(entry.type)}
+          </div>
+
+          <div
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              textDecoration: isDone ? 'line-through' : 'none',
+            }}
+          >
+            {title}
+          </div>
+
+          <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 13 }}>
+            Status: {entry.status || 'pending'}
+          </div>
         </div>
 
-        <div style={{ fontSize: 17, fontWeight: 700 }}>
-          {title}
-        </div>
-
-        <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 13 }}>
-          Status: {entry.status || 'pending'}
-        </div>
+        {entry.created_at && (
+          <div style={{ color: 'var(--text-3)', fontSize: 12, whiteSpace: 'nowrap' }}>
+            {new Date(entry.created_at).toLocaleDateString('de-DE')}
+          </div>
+        )}
       </div>
 
-      {entry.created_at && (
-        <div style={{ color: 'var(--text-3)', fontSize: 12, whiteSpace: 'nowrap' }}>
-          {new Date(entry.created_at).toLocaleDateString('de-DE')}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {!isDone ? (
+          <ActionButton onClick={() => onDone(entry.id)}>
+            Erledigt
+          </ActionButton>
+        ) : (
+          <ActionButton onClick={() => onUndo(entry.id)}>
+            Wieder offen
+          </ActionButton>
+        )}
+
+        <ActionButton danger onClick={() => onDelete(entry.id)}>
+          Löschen
+        </ActionButton>
+      </div>
     </div>
   )
 }
@@ -139,11 +194,65 @@ export default function DashboardClient() {
     }
   }
 
+  async function updateEntryStatus(id: string, status: 'pending' | 'done') {
+    try {
+      const res = await fetch('/api/entries', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id, status }),
+      })
+
+      const json = await res.json()
+
+      if (!json.ok) {
+        setError(json.error || 'Status konnte nicht geändert werden.')
+        return
+      }
+
+      await loadDashboard()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Status-Update fehlgeschlagen.')
+    }
+  }
+
+  async function deleteEntry(id: string) {
+    const confirmed = window.confirm('Diesen Eintrag wirklich löschen?')
+
+    if (!confirmed) return
+
+    try {
+      const res = await fetch('/api/entries', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id }),
+      })
+
+      const json = await res.json()
+
+      if (!json.ok) {
+        setError(json.error || 'Eintrag konnte nicht gelöscht werden.')
+        return
+      }
+
+      await loadDashboard()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen.')
+    }
+  }
+
   useEffect(() => {
     loadDashboard()
   }, [])
 
   const entries = useMemo(() => data?.entries ?? [], [data])
+
+  const activeEntries = entries.filter((entry) => entry.status !== 'done')
+  const doneEntries = entries.filter((entry) => entry.status === 'done')
+
   const events = entries.filter((entry) => entry.type === 'event')
   const tasks = entries.filter((entry) => entry.type === 'task')
   const reminders = entries.filter((entry) => entry.type === 'reminder')
@@ -180,12 +289,13 @@ export default function DashboardClient() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
           gap: 12,
           marginTop: 24,
         }}
       >
-        <Stat label="Gesamt" value={entries.length} />
+        <Stat label="Offen" value={activeEntries.length} />
+        <Stat label="Erledigt" value={doneEntries.length} />
         <Stat label="Termine" value={events.length} />
         <Stat label="Aufgaben" value={tasks.length} />
         <Stat label="Erinnerungen" value={reminders.length} />
@@ -228,15 +338,41 @@ export default function DashboardClient() {
         </div>
       )}
 
-      {entries.length > 0 && (
+      {activeEntries.length > 0 && (
         <section style={{ marginTop: 28 }}>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14 }}>
-            Alle Einträge
+            Offen
           </h2>
 
           <div style={{ display: 'grid', gap: 12 }}>
-            {entries.map((entry) => (
-              <EntryCard key={entry.id} entry={entry} />
+            {activeEntries.map((entry) => (
+              <EntryCard
+                key={entry.id}
+                entry={entry}
+                onDone={(id) => updateEntryStatus(id, 'done')}
+                onUndo={(id) => updateEntryStatus(id, 'pending')}
+                onDelete={deleteEntry}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {doneEntries.length > 0 && (
+        <section style={{ marginTop: 32 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14 }}>
+            Erledigt
+          </h2>
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            {doneEntries.map((entry) => (
+              <EntryCard
+                key={entry.id}
+                entry={entry}
+                onDone={(id) => updateEntryStatus(id, 'done')}
+                onUndo={(id) => updateEntryStatus(id, 'pending')}
+                onDelete={deleteEntry}
+              />
             ))}
           </div>
         </section>
