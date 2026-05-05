@@ -1,73 +1,126 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { chatWithClaude } from '@/lib/claude'
-import { createEntry, getPreferences } from '@/lib/db'
-import { syncAndPersist, getCalDAVConfig, getSyncUrls } from '@/lib/sync/router'
-import type { ChatPayload, Entry } from '@/types'
+import { NextResponse } from 'next/server'
 
-export async function POST(req: NextRequest) {
+export const dynamic = 'force-dynamic'
+
+type EntryType = 'event' | 'task' | 'reminder' | 'note'
+
+function getInputFromBody(body: any): string {
+  if (typeof body?.message === 'string') return body.message
+  if (typeof body?.input === 'string') return body.input
+  if (typeof body?.text === 'string') return body.text
+
+  if (Array.isArray(body?.messages) && body.messages.length > 0) {
+    const last = body.messages[body.messages.length - 1]
+    if (typeof last?.content === 'string') return last.content
+  }
+
+  return ''
+}
+
+function classifyInput(input: string): EntryType {
+  const text = input.toLowerCase()
+
+  const hasTime =
+    /\b\d{1,2}\s?uhr\b/.test(text) ||
+    /\b\d{1,2}:\d{2}\b/.test(text)
+
+  const hasDateWord =
+    text.includes('morgen') ||
+    text.includes('heute') ||
+    text.includes('übermorgen') ||
+    text.includes('montag') ||
+    text.includes('dienstag') ||
+    text.includes('mittwoch') ||
+    text.includes('donnerstag') ||
+    text.includes('freitag') ||
+    text.includes('samstag') ||
+    text.includes('sonntag')
+
+  if (
+    text.includes('erinnere') ||
+    text.includes('nicht vergessen') ||
+    text.includes('denk daran')
+  ) {
+    return 'reminder'
+  }
+
+  if (hasTime && hasDateWord) {
+    return 'event'
+  }
+
+  if (
+    text.includes('bis ') ||
+    text.includes('muss') ||
+    text.includes('todo') ||
+    text.includes('aufgabe') ||
+    text.includes('erledigen')
+  ) {
+    return 'task'
+  }
+
+  return 'note'
+}
+
+function createReply(input: string, type: EntryType): string {
+  if (type === 'event') {
+    return `Alles klar, ich habe das als Termin erkannt: „${input}“.`
+  }
+
+  if (type === 'task') {
+    return `Alles klar, ich habe das als Aufgabe erkannt: „${input}“.`
+  }
+
+  if (type === 'reminder') {
+    return `Alles klar, ich habe das als Erinnerung erkannt: „${input}“.`
+  }
+
+  return `Alles klar, ich habe mir das als Notiz gemerkt: „${input}“.`
+}
+
+export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const body = await request.json()
+    const input = getInputFromBody(body).trim()
+
+    if (!input) {
+      return NextResponse.json(
+        {
+          reply: 'Ich habe keine Eingabe erkannt.',
+          message: 'Ich habe keine Eingabe erkannt.',
+          type: 'note',
+        },
+        { status: 200 }
+      )
     }
 
-    const body: ChatPayload = await req.json()
-    if (!body.message?.trim()) {
-      return NextResponse.json({ error: 'message is required' }, { status: 400 })
-    }
+    const type = classifyInput(input)
+    const reply = createReply(input, type)
 
-    const preferences = await getPreferences(user.id)
-
-    const { reply, extracted } = await chatWithClaude(
-      body.message,
-      body.history ?? [],
-      preferences
+    return NextResponse.json(
+      {
+        reply,
+        message: reply,
+        content: reply,
+        type,
+        entry: {
+          title: input,
+          type,
+          status: 'pending',
+          source: 'fallback-chat',
+        },
+      },
+      { status: 200 }
     )
+  } catch (error) {
+    console.error('Fallback chat error:', error)
 
-    let savedEntry: Entry | null = null
-    let syncResult: { success: boolean; appleId?: string; skipped?: boolean; error?: string } | null = null
-
-    if (extracted) {
-      savedEntry = await createEntry(user.id, {
-        type:     extracted.type,
-        title:    extracted.title,
-        date:     extracted.date ?? undefined,
-        time:     extracted.time ?? undefined,
-        due_date: extracted.due_date ?? undefined,
-        priority: extracted.priority ?? 'medium',
-        context:  extracted.context ?? undefined,
-      })
-
-      if (extracted.type === 'note' && extracted.context) {
-        const { upsertPreference } = await import('@/lib/db')
-        await upsertPreference(user.id, extracted.context, extracted.title)
-      }
-
-      // Auto-sync to Apple (non-blocking – never crashes the chat response)
-      if (process.env.APPLE_ID && process.env.APPLE_APP_PASSWORD &&
-          process.env.APPLE_CALENDAR_URL && process.env.APPLE_REMINDERS_URL) {
-        try {
-          const config = getCalDAVConfig()
-          const urls = getSyncUrls()
-          syncResult = await syncAndPersist(savedEntry, user.id, config, urls)
-        } catch (syncErr) {
-          console.error('[chat] Apple sync failed (non-fatal):', syncErr)
-          syncResult = { success: false, error: String(syncErr) }
-        }
-      }
-    }
-
-    await supabase.from('chat_messages').insert([
-      { user_id: user.id, role: 'user',      content: body.message },
-      { user_id: user.id, role: 'assistant', content: reply, extracted: extracted ?? null },
-    ])
-
-    return NextResponse.json({ reply, extracted, savedEntry, sync: syncResult })
-
-  } catch (err) {
-    console.error('[/api/chat]', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json(
+      {
+        reply: 'Es gab einen Fehler im Chat-Fallback.',
+        message: 'Es gab einen Fehler im Chat-Fallback.',
+        error: 'fallback_chat_error',
+      },
+      { status: 200 }
+    )
   }
 }
