@@ -1,290 +1,265 @@
 'use client'
 
-import { useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
-import { useDashboard } from '@/components/dashboard/useDashboard'
-import { YouTubePanel } from '@/components/youtube/YouTubePanel'
-import { TypeBadge, PriorityChip, Spinner, EmptyState, SectionLabel } from '@/components/ui'
-import type { Entry } from '@/types'
+import { useEffect, useMemo, useState } from 'react'
 
-// ── Helpers ───────────────────────────────────────────────────
-
-function todayLabel() {
-  return new Date().toLocaleDateString('de-DE', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  })
+type Entry = {
+  id: string
+  title?: string | null
+  type?: 'event' | 'task' | 'reminder' | 'note' | string | null
+  status?: string | null
+  created_at?: string | null
+  date?: string | null
+  time?: string | null
+  due_at?: string | null
+  start_at?: string | null
+  source?: string | null
+  metadata?: {
+    originalInput?: string
+    [key: string]: unknown
+  } | null
 }
 
-function greetingWord() {
-  const h = new Date().getHours()
-  if (h < 12) return 'Guten Morgen'
-  if (h < 18) return 'Guten Tag'
-  return 'Guten Abend'
+type DashboardResponse = {
+  ok?: boolean
+  entries?: Entry[]
+  events?: Entry[]
+  tasks?: Entry[]
+  reminders?: Entry[]
+  notes?: Entry[]
+  counts?: {
+    total?: number
+    events?: number
+    tasks?: number
+    reminders?: number
+    notes?: number
+  }
+  error?: string | null
 }
 
-function fmtTime(time?: string | null) {
-  if (!time) return ''
-  return time.slice(0, 5)
+function getTypeLabel(type?: string | null) {
+  if (type === 'event') return 'Termin'
+  if (type === 'task') return 'Aufgabe'
+  if (type === 'reminder') return 'Erinnerung'
+  if (type === 'note') return 'Notiz'
+  return 'Eintrag'
 }
 
-// ── Timeline item ─────────────────────────────────────────────
+function getTypeColor(type?: string | null) {
+  if (type === 'event') return '#7c5cff'
+  if (type === 'task') return '#3ddc97'
+  if (type === 'reminder') return '#ffb020'
+  if (type === 'note') return '#6ea8fe'
+  return '#999'
+}
 
-function TimelineItem({ entry }: { entry: Entry }) {
-  const dotColor = entry.type === 'event' ? 'var(--accent2)'
-    : entry.type === 'reminder' ? 'var(--amber)' : 'var(--teal)'
+function EntryCard({ entry }: { entry: Entry }) {
+  const title =
+    entry.title ||
+    entry.metadata?.originalInput ||
+    'Unbenannter Eintrag'
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: 12,
-      padding: '9px 10px', borderRadius: 9, marginBottom: 2,
-      transition: 'background .12s', cursor: 'default',
-    }}
-    onMouseOver={e => (e.currentTarget.style.background = 'var(--bg3)')}
-    onMouseOut={e  => (e.currentTarget.style.background = 'transparent')}
+    <div
+      style={{
+        padding: 16,
+        borderRadius: 16,
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'rgba(255,255,255,0.035)',
+        display: 'flex',
+        justifyContent: 'space-between',
+        gap: 16,
+      }}
     >
-      <div style={{
-        fontFamily: 'var(--mono)', fontSize: 11,
-        color: 'var(--text3)', minWidth: 44, paddingTop: 2,
-      }}>
-        {fmtTime(entry.time) || '——'}
-      </div>
-      <div style={{
-        width: 8, height: 8, borderRadius: '50%',
-        background: dotColor, marginTop: 5, flexShrink: 0,
-      }}/>
       <div>
-        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)', marginBottom: 2 }}>
-          {entry.title}
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            marginBottom: 8,
+            fontSize: 13,
+            color: getTypeColor(entry.type),
+            fontWeight: 600,
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 99,
+              background: getTypeColor(entry.type),
+            }}
+          />
+          {getTypeLabel(entry.type)}
         </div>
-        {entry.context && (
-          <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>{entry.context}</div>
-        )}
+
+        <div style={{ fontSize: 17, fontWeight: 700 }}>
+          {title}
+        </div>
+
+        <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 13 }}>
+          Status: {entry.status || 'pending'}
+        </div>
       </div>
+
+      {entry.created_at && (
+        <div style={{ color: 'var(--text-3)', fontSize: 12, whiteSpace: 'nowrap' }}>
+          {new Date(entry.created_at).toLocaleDateString('de-DE')}
+        </div>
+      )}
     </div>
   )
 }
-
-// ── Task item ─────────────────────────────────────────────────
-
-function TaskItem({ entry, onDone }: { entry: Entry; onDone: (id: string) => void }) {
-  const done = entry.status === 'done'
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: 10,
-      padding: '8px 10px', borderRadius: 9, marginBottom: 2,
-      opacity: done ? .45 : 1, transition: 'all .15s', cursor: 'default',
-    }}
-    onMouseOver={e => (e.currentTarget.style.background = 'var(--bg3)')}
-    onMouseOut={e  => (e.currentTarget.style.background = 'transparent')}
-    >
-      {/* Checkbox */}
-      <div
-        onClick={() => !done && onDone(entry.id)}
-        style={{
-          width: 16, height: 16, borderRadius: 4, flexShrink: 0, marginTop: 2,
-          border: done ? 'none' : '1.5px solid var(--border2)',
-          background: done ? 'var(--teal)' : 'transparent',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: done ? 'default' : 'pointer', transition: 'all .15s',
-        }}
-      >
-        {done && <span style={{ fontSize: 10, color: '#fff', fontWeight: 700 }}>✓</span>}
-      </div>
-
-      <div style={{ flex: 1 }}>
-        <span style={{
-          fontSize: 13, color: 'var(--text)',
-          textDecoration: done ? 'line-through' : 'none',
-        }}>
-          {entry.title}
-        </span>
-        {entry.due_date && !done && (
-          <span style={{ fontSize: 11, color: 'var(--text3)', marginLeft: 8, fontFamily: 'var(--mono)' }}>
-            bis {new Date(entry.due_date).toLocaleDateString('de-DE', { day:'2-digit', month:'short' })}
-          </span>
-        )}
-      </div>
-
-      <PriorityChip priority={entry.priority} />
-    </div>
-  )
-}
-
-// ── Main component ────────────────────────────────────────────
 
 export default function DashboardClient() {
-  const { overview, isLoading, refresh, markDone } = useDashboard()
-  const searchParams = useSearchParams()
-  const router = useRouter()
+  const [data, setData] = useState<DashboardResponse | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Handle YouTube OAuth redirect params
-  useEffect(() => {
-    if (searchParams.get('yt_connected')) {
-      router.replace('/dashboard')
+  async function loadDashboard() {
+    try {
+      setIsLoading(true)
+      setError(null)
+
+      const res = await fetch('/api/dashboard', {
+        cache: 'no-store',
+      })
+
+      const json = (await res.json()) as DashboardResponse
+
+      setData(json)
+
+      if (!res.ok || json.error) {
+        setError(json.error || 'Dashboard-Daten konnten nicht geladen werden.')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unbekannter Fehler')
+    } finally {
+      setIsLoading(false)
     }
-  }, [searchParams, router])
+  }
 
-  const totalItems = overview
-    ? overview.events.length + overview.tasks.length + overview.reminders.length
-    : 0
+  useEffect(() => {
+    loadDashboard()
+  }, [])
+
+  const entries = useMemo(() => data?.entries ?? [], [data])
+  const events = entries.filter((entry) => entry.type === 'event')
+  const tasks = entries.filter((entry) => entry.type === 'task')
+  const reminders = entries.filter((entry) => entry.type === 'reminder')
+  const notes = entries.filter((entry) => entry.type === 'note')
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 272px', height: '100%', overflow: 'hidden' }}>
-
-      {/* ── Main column ───────────────────────────────── */}
-      <div style={{ overflow: 'auto', padding: '24px 24px 24px 24px' }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: 20 }}>
-          <p style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)', marginBottom: 4 }}>
-            {todayLabel().toUpperCase()}
-          </p>
-          <h1 style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', marginBottom: 0 }}>
-            {greetingWord()}!{' '}
-            {!isLoading && overview && (
-              <span style={{ color: 'var(--accent2)' }}>
-                {totalItems === 0 ? 'Nichts anstehend.' : `${totalItems} Einträge heute.`}
-              </span>
-            )}
+    <main style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+        <div>
+          <h1 style={{ fontSize: 28, fontWeight: 800 }}>
+            Dashboard
           </h1>
+          <p style={{ color: 'var(--text-3)', marginTop: 6 }}>
+            Deine gespeicherten Termine, Aufgaben, Erinnerungen und Notizen.
+          </p>
         </div>
 
-        {/* Claude insight bar */}
-        {!isLoading && overview && overview.overdue.length > 0 && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            background: 'rgba(245,166,35,.08)',
-            border: '1px solid rgba(245,166,35,.25)',
-            borderRadius: 11, padding: '10px 14px', marginBottom: 18,
-          }}>
-            <span style={{ fontSize: 15 }}>⚠️</span>
-            <span style={{ fontSize: 12.5, color: 'var(--amber)' }}>
-              <strong>{overview.overdue.length} überfällige Aufgabe{overview.overdue.length > 1 ? 'n' : ''}</strong>
-              {' '}— jetzt im Chat priorisieren?
-            </span>
-            <a href="/chat" style={{
-              marginLeft: 'auto', fontSize: 11,
-              color: 'var(--accent)', fontFamily: 'var(--mono)',
-            }}>Chat →</a>
-          </div>
-        )}
-
-        {/* Stats row */}
-        {isLoading ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
-            <Spinner size={24} />
-          </div>
-        ) : overview ? (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 24 }}>
-              {[
-                { n: overview.events.length,    label: 'TERMINE HEUTE',  color: 'var(--accent2)' },
-                { n: overview.tasks.length,     label: 'OFFENE TASKS',   color: 'var(--teal)'    },
-                { n: overview.reminders.length, label: 'ERINNERUNGEN',   color: 'var(--amber)'   },
-              ].map(({ n, label, color }) => (
-                <div key={label} style={{
-                  background: 'var(--bg3)', border: '1px solid var(--border)',
-                  borderRadius: 11, padding: '12px 16px',
-                }}>
-                  <div style={{ fontSize: 28, fontWeight: 600, color, lineHeight: 1, marginBottom: 4 }}>{n}</div>
-                  <div style={{ fontSize: 10.5, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>{label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Timeline */}
-            <SectionLabel>Heute · Zeitplan</SectionLabel>
-            {overview.events.length === 0 && overview.reminders.length === 0 ? (
-              <EmptyState icon="📅" title="Keine Termine heute" sub="Über Quick Capture hinzufügen" />
-            ) : (
-              <div style={{ marginBottom: 24 }}>
-                {[...overview.events, ...overview.reminders]
-                  .sort((a, b) => (a.time ?? '99:99') > (b.time ?? '99:99') ? 1 : -1)
-                  .map(entry => <TimelineItem key={entry.id} entry={entry} />)
-                }
-              </div>
-            )}
-
-            {/* Tasks */}
-            <SectionLabel>Aufgaben · Priorisiert</SectionLabel>
-            {overview.tasks.length === 0 ? (
-              <EmptyState icon="✓" title="Alle Aufgaben erledigt" />
-            ) : (
-              <div>
-                {[...overview.tasks]
-                  .sort((a, b) => {
-                    const order = { high: 0, medium: 1, low: 2 }
-                    return order[a.priority] - order[b.priority]
-                  })
-                  .map(entry => (
-                    <TaskItem key={entry.id} entry={entry} onDone={markDone} />
-                  ))
-                }
-              </div>
-            )}
-          </>
-        ) : null}
+        <button
+          onClick={loadDashboard}
+          style={{
+            height: 42,
+            padding: '0 16px',
+            borderRadius: 12,
+            border: '1px solid rgba(255,255,255,0.12)',
+            background: 'rgba(255,255,255,0.05)',
+            color: 'var(--text)',
+            cursor: 'pointer',
+          }}
+        >
+          Aktualisieren
+        </button>
       </div>
 
-      {/* ── Sidebar ───────────────────────────────────── */}
-      <div style={{
-        borderLeft: '1px solid var(--border)',
-        padding: '24px 16px',
-        overflow: 'auto',
-        background: 'var(--bg)',
-      }}>
-        <SectionLabel>Letztes Video</SectionLabel>
-        <div style={{ marginBottom: 24 }}>
-          <YouTubePanel />
-        </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+          gap: 12,
+          marginTop: 24,
+        }}
+      >
+        <Stat label="Gesamt" value={entries.length} />
+        <Stat label="Termine" value={events.length} />
+        <Stat label="Aufgaben" value={tasks.length} />
+        <Stat label="Erinnerungen" value={reminders.length} />
+        <Stat label="Notizen" value={notes.length} />
+      </div>
 
-        {/* Reminders list */}
-        {!isLoading && overview && overview.reminders.length > 0 && (
-          <>
-            <SectionLabel>Erinnerungen</SectionLabel>
-            {overview.reminders.map(entry => (
-              <div key={entry.id} style={{
-                display: 'flex', alignItems: 'flex-start', gap: 8,
-                padding: '7px 8px', borderRadius: 8, marginBottom: 3,
-              }}>
-                <div style={{
-                  width: 7, height: 7, borderRadius: '50%',
-                  background: 'var(--amber)', flexShrink: 0, marginTop: 5,
-                }}/>
-                <div>
-                  <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>{entry.title}</div>
-                  {entry.time && (
-                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
-                      {fmtTime(entry.time)} Uhr
-                    </div>
-                  )}
-                </div>
-              </div>
+      {isLoading && (
+        <div style={{ marginTop: 28, color: 'var(--text-3)' }}>
+          Lade Dashboard-Daten...
+        </div>
+      )}
+
+      {error && (
+        <div
+          style={{
+            marginTop: 24,
+            padding: 16,
+            borderRadius: 14,
+            background: 'rgba(255, 0, 0, 0.08)',
+            color: '#ff6b6b',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {!isLoading && entries.length === 0 && (
+        <div
+          style={{
+            marginTop: 28,
+            padding: 20,
+            borderRadius: 18,
+            border: '1px solid rgba(255,255,255,0.08)',
+            background: 'rgba(255,255,255,0.035)',
+          }}
+        >
+          Noch keine Einträge gefunden. Schreibe im Chat z. B.:
+          <br />
+          <strong>morgen um 14 uhr tennis</strong>
+        </div>
+      )}
+
+      {entries.length > 0 && (
+        <section style={{ marginTop: 28 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14 }}>
+            Alle Einträge
+          </h2>
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            {entries.map((entry) => (
+              <EntryCard key={entry.id} entry={entry} />
             ))}
-          </>
-        )}
+          </div>
+        </section>
+      )}
+    </main>
+  )
+}
 
-        {/* Quick links */}
-        <div style={{ marginTop: 20 }}>
-          <SectionLabel>Schnellzugriff</SectionLabel>
-          {[
-            { href: '/chat',    label: 'Tag planen →'        },
-            { href: '/capture', label: 'Eintrag hinzufügen →' },
-            { href: '/chat',    label: 'YouTube-Tipps holen →' },
-          ].map(({ href, label }) => (
-            <a key={label} href={href} style={{
-              display: 'block', padding: '9px 12px',
-              background: 'var(--bg3)', border: '1px solid var(--border)',
-              borderRadius: 9, fontSize: 12.5, color: 'var(--text2)',
-              marginBottom: 5, transition: 'all .15s',
-            }}
-            onMouseOver={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent2)' }}
-            onMouseOut={e  => { e.currentTarget.style.borderColor = 'var(--border)';  e.currentTarget.style.color = 'var(--text2)'  }}
-            >
-              {label}
-            </a>
-          ))}
-        </div>
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        borderRadius: 16,
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'rgba(255,255,255,0.035)',
+      }}
+    >
+      <div style={{ color: 'var(--text-3)', fontSize: 13 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>
+        {value}
       </div>
     </div>
   )
