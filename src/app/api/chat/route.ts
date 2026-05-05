@@ -116,11 +116,13 @@ async function saveEntry(input: string, type: EntryType) {
     const response = await fetch(`${config.url}/rest/v1/entries`, {
       method: 'POST',
       headers: {
-        apikey: config.key,
-        Authorization: `Bearer ${config.key}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
-      },
+  apikey: config.key,
+  ...(config.key.startsWith('eyJ')
+    ? { Authorization: `Bearer ${config.key}` }
+    : {}),
+  'Content-Type': 'application/json',
+  Prefer: 'return=representation',
+},
       body: JSON.stringify({
         type,
         title: input,
