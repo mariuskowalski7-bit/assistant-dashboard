@@ -218,10 +218,7 @@ export default function DashboardClient() {
   }
 
   async function deleteEntry(id: string) {
-    const confirmed = window.confirm('Diesen Eintrag wirklich löschen?')
-
-    if (!confirmed) return
-
+   
     try {
       const res = await fetch('/api/entries', {
         method: 'DELETE',
