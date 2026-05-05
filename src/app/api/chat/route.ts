@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
@@ -61,20 +62,38 @@ function classifyInput(input: string): EntryType {
   return 'note'
 }
 
-function createReply(input: string, type: EntryType): string {
+function createReply(input: string, type: EntryType, saved: boolean): string {
+  const savedText = saved ? ' und gespeichert' : ''
+
   if (type === 'event') {
-    return `Alles klar, ich habe das als Termin erkannt: „${input}“.`
+    return `Alles klar, ich habe das als Termin erkannt${savedText}: „${input}“.`
   }
 
   if (type === 'task') {
-    return `Alles klar, ich habe das als Aufgabe erkannt: „${input}“.`
+    return `Alles klar, ich habe das als Aufgabe erkannt${savedText}: „${input}“.`
   }
 
   if (type === 'reminder') {
-    return `Alles klar, ich habe das als Erinnerung erkannt: „${input}“.`
+    return `Alles klar, ich habe das als Erinnerung erkannt${savedText}: „${input}“.`
   }
 
-  return `Alles klar, ich habe mir das als Notiz gemerkt: „${input}“.`
+  return `Alles klar, ich habe mir das als Notiz gemerkt${savedText}: „${input}“.`
+}
+
+function getSupabaseAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!url || !serviceKey) {
+    return null
+  }
+
+  return createClient(url, serviceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  })
 }
 
 export async function POST(request: Request) {
@@ -88,13 +107,41 @@ export async function POST(request: Request) {
           reply: 'Ich habe keine Eingabe erkannt.',
           message: 'Ich habe keine Eingabe erkannt.',
           type: 'note',
+          saved: false,
         },
         { status: 200 }
       )
     }
 
     const type = classifyInput(input)
-    const reply = createReply(input, type)
+    const supabase = getSupabaseAdmin()
+
+    let saved = false
+    let saveError: string | null = null
+
+    if (supabase) {
+      const { error } = await supabase.from('entries').insert({
+        type,
+        title: input,
+        status: 'pending',
+        source: 'fallback-chat',
+        metadata: {
+          originalInput: input,
+          createdBy: 'zero-cost-fallback',
+        },
+      })
+
+      if (error) {
+        saveError = error.message
+        console.error('Entry save error:', error)
+      } else {
+        saved = true
+      }
+    } else {
+      saveError = 'SUPABASE_SERVICE_ROLE_KEY fehlt.'
+    }
+
+    const reply = createReply(input, type, saved)
 
     return NextResponse.json(
       {
@@ -102,6 +149,8 @@ export async function POST(request: Request) {
         message: reply,
         content: reply,
         type,
+        saved,
+        saveError,
         entry: {
           title: input,
           type,
@@ -112,13 +161,14 @@ export async function POST(request: Request) {
       { status: 200 }
     )
   } catch (error) {
-    console.error('Fallback chat error:', error)
+    console.error('Chat route error:', error)
 
     return NextResponse.json(
       {
         reply: 'Es gab einen Fehler im Chat-Fallback.',
         message: 'Es gab einen Fehler im Chat-Fallback.',
-        error: 'fallback_chat_error',
+        error: 'chat_fallback_error',
+        saved: false,
       },
       { status: 200 }
     )
